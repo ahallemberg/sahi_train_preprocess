@@ -9,15 +9,16 @@ import shutil
 from enum import Enum
 import copy
 from random import shuffle 
+from typing import Union
 
-## only accesp bboxes with atleast a threshold, also make sure not too many images are images of just backgound.# resize to nn input size
 
 class Sliced_BBox_Operation(Enum): 
     THROW = 1 # throw away the bbox
     DELETE = 2 # delete the slice
 
+
 class Point: 
-    def __init__(self, x: int, y: int) -> None:
+    def __init__(self, x: float, y: float) -> None:
         self.x = x
         self.y = y
 
@@ -26,6 +27,9 @@ class Point:
 
     def __sub__(self, other: 'Point') -> 'Point':
         return Point(self.x - other.x, self.y - other.y)
+    
+    def __repr__(self) -> str:
+        return f"Point({self.x}, {self.y})"
 
 
 class RectangleRegion: 
@@ -33,12 +37,59 @@ class RectangleRegion:
         self.top_left = top_left
         self.bottom_right = bottom_right
 
+        assert self.top_left.x < self.bottom_right.x, "Top left x must be less than bottom right x"
+        assert self.top_left.y < self.bottom_right.y, "Top left y must be less than bottom right y"
+
     def __contains__(self, point: Point) -> bool:
         return self.top_left.x <= point.x <= self.bottom_right.x and self.top_left.y <= point.y <= self.bottom_right.y
+    
+    def __repr__(self) -> str:
+        return f"RectangleRegion({self.top_left}, {self.bottom_right})"
+    
+    def __truediv__(self, other: 'RectangleRegion') -> 'RectangleRegion':
+        self.top_left.x /= other.width()
+        self.top_left.y /= other.height()
+        self.bottom_right.x /= other.width()
+        self.bottom_right.y /= other.height()
 
-# slicer multiple constructors
+        return self
+
+    def width(self) -> float:
+        return self.bottom_right.x - self.top_left.x
+    
+    def height(self) -> float:
+        return self.bottom_right.y - self.top_left.y
+    
+    def x(self) -> float:
+        return self.top_left.x
+    
+    def y(self) -> float:
+        return self.top_left.y
+    
+    def x_center(self) -> float:
+        return self.top_left.x + self.width() / 2
+    
+    def y_center(self) -> float:
+        return self.top_left.y + self.height() / 2
+
+    def area(self) -> float:
+        return self.width() * self.height()
+    
+    def transform_to_local(self, other: 'RectangleRegion') -> None: # transform self to local coordinates of other
+        self.top_left -= other.top_left
+        self.bottom_right -= other.top_left
+    
+    def intersection(self, other: 'RectangleRegion') -> Union['RectangleRegion',None]: # returns the intersection of two rectangles
+        top_left = Point(max(self.top_left.x, other.top_left.x), max(self.top_left.y, other.top_left.y))
+        bottom_right = Point(min(self.bottom_right.x, other.bottom_right.x), min(self.bottom_right.y, other.bottom_right.y))
+        # check if intersection is valid
+        if top_left.x >= bottom_right.x or top_left.y >= bottom_right.y:
+            return None
+        return RectangleRegion(top_left, bottom_right)
+
+
 class Slicer:
-    def __init__(self, imgs_path: str, labels_path: str, output_path: str, nn_input_size: int, empty_img_ratio: None|float = None, bbox_size_threshold: None|float = None, sliced_bbox_operation: None|Sliced_BBox_Operation = None) -> None: 
+    def __init__(self, imgs_path: str, labels_path: str, output_path: str, nn_input_size: int, empty_img_ratio: None|float = None, bbox_size_threshold: None|float = None, sliced_bbox_operation: Sliced_BBox_Operation = Sliced_BBox_Operation.DELETE) -> None: 
         assert os.path.exists(imgs_path), "Image path does not exist"
         assert os.path.exists(labels_path), "Label path does not exist"
         
@@ -131,7 +182,6 @@ class Slicer:
             cv2.imwrite(os.path.join(self.output_path, "images", f"{name}_{region_index}.{ext}"), sliced_img)
 
    
-
     def _process(self, img_basename: str, target_height: int, target_width: int, overlap_height_ratio: int, overlap_width_ratio: int) -> None:
         if target_height < self.nn_input_size or target_width < self.nn_input_size:
             logging.error("Target height and width must be greater or equal to nn_input_size")
@@ -149,21 +199,23 @@ class Slicer:
         regions: dict[int, tuple[int, int, int, int]] = self.calculate_slice_regions(image_height, image_width, target_height, target_width, overlap_height_ratio, overlap_width_ratio)
         sliced_labels: dict[int, list[tuple[int, float, float, float, float]]]
 
-        regions, sliced_labels = self._calc_slice_labels(image_height, image_width, regions, labels) #filter for bbox and empty images
-   
-   
+        regions, sliced_labels = self._calc_slice_labels(image_height, image_width, regions, labels) 
+        del labels
 
         # filter labels for bbox size
         if self.empty_img_ratio is not None:
             regions, sliced_labels = self._filter_empty_labels(regions, sliced_labels)
         
-        # write label to disk
+        # write labels to disk
         self._save_labels(sliced_labels, img_basename.removesuffix(f".{img_basename.split('.')[-1]}"))
-        # slice image
+
+        # slice the actual image and save to disk
         self._slice_and_save_imgs(regions, img, img_basename.removesuffix(f".{img_basename.split('.')[-1]}"), img_basename.split('.')[-1])
+
 
     def _compress(self) -> None:
         shutil.make_archive(os.path.basename(self.output_path), 'zip', self.output_path)
+
 
     def _post_process(self) -> None:
         # print out log and delete file
@@ -190,13 +242,14 @@ class Slicer:
 
         print(f"Time taken: {time.time() - start:.2f} seconds")
 
+
     def single_slice(self, img_basename: str,  target_height: int, target_width: int, overlap_height_ratio: float, overlap_width_ratio: float) -> None:
         self._process(img_basename, target_height, target_width, overlap_height_ratio, overlap_width_ratio)
         self._post_process()
 
     
     def _calc_slice_labels(self, image_height: int, image_width: int, regions: dict[int, tuple[int, int, int, int]], labels: list[tuple[int, float, float, float, float]]) -> dict[int, list[tuple[int, float, float, float, float]]]: 
-        new_regions = copy.deepcopy(regions)
+        new_regions = copy.copy(regions) # doesnt need to use deepcopy since del only deletes references
         new_labels: dict[int, list[tuple[int, float, float, float, float]]] = {region_index: [] for region_index in regions}
      
         for region_index, (region_x, region_y, region_w, region_h) in regions.items():
@@ -210,100 +263,51 @@ class Slicer:
                 bbox_w = width_rel * image_width
                 bbox_h = height_rel * image_height
 
-                bbox_topl = (bbox_x, bbox_y)
-                bbox_topr = (bbox_x + bbox_w, bbox_y)
-                bbox_botl = (bbox_x, bbox_y + bbox_h)
-                bbox_botr = (bbox_x + bbox_w, bbox_y + bbox_h)
+                bbox_topl = Point(bbox_x, bbox_y)
+                bbox_botr = Point(bbox_x + bbox_w, bbox_y + bbox_h)
 
-                print(f"bbox {bbox_topl} {bbox_topr} {bbox_botl} {bbox_botr}")
-                print((region_x, region_y, region_w, region_h))
+                intersection = rectangleRegion.intersection(RectangleRegion(bbox_topl, bbox_botr))
+                if intersection is None:
+                    continue
                 
-                
+                intersection.transform_to_local(rectangleRegion)
+                intersection /= rectangleRegion
 
 
+                # filter bbox if it is too small
+                if self.bbox_size_threshold is not None and intersection.area() < self.bbox_size_threshold:
+                    match self.sliced_bbox_operation: 
+                        case Sliced_BBox_Operation.THROW: # remove bbox from label
+                            print(f"Throwing away bbox {class_id} in region {region_index}")
+                            continue
 
+                        case Sliced_BBox_Operation.DELETE: # delete label and corresponding region 
+                            print(f"Deleting bbox {class_id} in region {region_index}")
+                            del new_labels[region_index]
+                            del new_regions[region_index] 
+                            break
+                        
+                        case _: 
+                            raise ValueError("Invalid Sliced_BBox_Operation") 
 
-
-
-
-
-
-            
-                #check for absolute delta. Do not skip/
-                delta_x = bbox_x - region_x
-                delta_y = bbox_y - region_y
-
-                if abs(delta_x) < region_w and abs(delta_y) < region_h: # check if distance is correct, doesnt overshoot 
-                    if delta_x < 0: # if delta is negative, remove from width
-                        bbox_w = bbox_w + delta_x
-                        bbox_region_x_rel = 0
-                        bbox_region_width_rel = min(bbox_w / region_w, 1) 
-                    else: 
-                        bbox_w = ((region_x+region_w) -delta_x) / region_w
-                        bbox_region_x_rel = delta_x / region_w
-                        bbox_region_width_rel = bbox_w / region_w
-
-                    
-                    if delta_y < 0: # if delta is negative, remove from height
-                        bbox_h = bbox_h + delta_y
-                        bbox_region_y_rel = 0
-                        bbox_region_height_rel = min(bbox_h / region_h, 1) # if object is bigger than slice, set to 1
-                    else:
-                        bbox_h = ((region_y+region_h) -delta_y) / region_h
-                        bbox_region_y_rel = delta_y / region_h
-                        bbox_region_height_rel = bbox_h / region_h
-               
-
-                    if bbox_region_width_rel < 0 or bbox_region_height_rel < 0: # check if bbox is outside of region
-                        continue
-
-                    # filter bbox if it is too small
-                    if self.bbox_size_threshold is not None and (bbox_region_width_rel*bbox_region_height_rel)/((bbox_w/region_w)*(bbox_h/region_h)) < self.bbox_size_threshold:
-                        match self.sliced_bbox_operation: 
-                            case Sliced_BBox_Operation.THROW: # remove bbox from label
-                                print(f"Throwing away bbox {class_id} in region {region_index}")
-                                continue
-
-                            case Sliced_BBox_Operation.DELETE | None: # delete label and corresponding region 
-                                print(f"Deleting bbox {class_id} in region {region_index}")
-                                del new_labels[region_index]
-                                del new_regions[region_index] 
-                                break
-                          
-                            case _: 
-                                raise ValueError("Invalid Sliced_BBox_Operation") 
-
-                    bbox_region_x_center_rel = bbox_region_x_rel + (bbox_region_width_rel / 2)
-                    bbox_region_y_center_rel = bbox_region_y_rel + (bbox_region_height_rel / 2)
-                    
-
-                    new_labels[region_index].append((class_id, bbox_region_x_center_rel, bbox_region_y_center_rel, bbox_region_width_rel, bbox_region_height_rel))
+                new_labels[region_index].append((class_id, intersection.x_center(), intersection.y_center(), intersection.width(), intersection.height()))
         
-        # print all keys in new_regions
-
-        
- 
         return new_regions, new_labels
     
+
     def _filter_empty_labels(self, regions: dict[int, tuple[int, int, int, int]], labels: dict[int, list[tuple[int, float, float, float, float]]]) -> tuple[dict[int, tuple[int, int, int, int]], dict[int, list[tuple[int, float, float, float, float]]]]: # takes in pointers and deletes items from the list/dict
-         
         bbox_labels = {region_index: label for region_index, label in labels.items() if len(label) > 0}
-    
         empty_labels = {region_index: label for region_index, label in labels.items() if len(label) == 0}
 
-
         new_regions = {}
-        new_labels = copy.deepcopy(bbox_labels) # need to do deepcopy
+        new_labels = copy.copy(bbox_labels) 
 
-        for key, item in bbox_labels.items(): # loop through bboxes
+        for index in bbox_labels.keys(): # loop through bboxes
             self._total_img_count += 1
 
-            # add region to new region for this key
-            new_regions[key] = regions[key]
+            # add region to new region for this index
+            new_regions[index] = regions[index]
 
-            print(key,item)
-            if key in [2, 12 ,43]:
-                print("bbox loop " + str(key))
 
         # shuffle empty labels to get random backgrounds 
         l = list(empty_labels.items())
@@ -317,45 +321,17 @@ class Slicer:
                 new_regions[index] = regions[index]
                 new_labels[index] = empty_label # add empty label to
 
-                print(index, empty_label)
-                if item in [2, 12 ,43]:
-                    print("empty loop " + str(index))
-
-        print("LABELS")
-        print(new_labels)
-        print("REGIONS")
-        print(new_regions)
+     
         return new_regions, new_labels
 
-        """
-    _save_labels
-        print(labels)
-        # first add bboxes, then add the empty images. 
-        print(regions)
-
-        new_regions = copy.deepcopy(regions)
-        new_labels = copy.deepcopy(labels)
-
-        for region_index, label in labels.items(): 
-            if len(label) == 0:
-                if self._empty_img_count / max(self._total_img_count,1) > self.empty_img_ratio:
-                    del new_labels[region_index]
-                    del new_regions[region_index]
-                else: 
-                    self._empty_img_count += 1
-                    self._total_img_count += 1
-            else:
-                self._total_img_count += 1
-
-        return new_regions, new_labels
-
-        """
 
 slicer = Slicer(
     "/home/askhb/ascend/suas2023_detection_dataset/test/resized/images", 
     "/home/askhb/ascend/suas2023_detection_dataset/test/resized/labels", 
     "/home/askhb/ascend/suas2023_detection_dataset/test/custom_sliced_test2", 
-    640, 
+    640,
+    0.5,
+    0.1
 
 )
 
