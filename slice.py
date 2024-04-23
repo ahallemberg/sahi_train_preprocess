@@ -1,15 +1,14 @@
-import logging
 import os
 import cv2
 from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import numpy as np
 import time 
-import shutil
 from enum import Enum
 import copy
 from random import shuffle 
 from typing import Union
+import traceback
 
 
 class Sliced_BBox_Operation(Enum): 
@@ -116,13 +115,6 @@ class Slicer:
         self._empty_img_count = 0
         self._total_img_count = 0
 
-        self._init_logger()
-
-
-    def _init_logger(self) -> None:
-        logging.basicConfig(filename=f"{self.output_path}/log.txt", level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
-
-
     def calculate_slice_regions(self, image_height: int, image_width: int, target_height: int, target_width: int, overlap_height_ratio: int, overlap_width_ratio: int) -> dict[int, tuple[int, int, int, int]]:
         # Calculations for moving step in both dimensions
         step_height = target_height - int(target_height * overlap_height_ratio)
@@ -184,8 +176,8 @@ class Slicer:
    
     def _process(self, img_basename: str, target_height: int, target_width: int, overlap_height_ratio: int, overlap_width_ratio: int) -> None:
         if target_height < self.nn_input_size or target_width < self.nn_input_size:
-            logging.error("Target height and width must be greater or equal to nn_input_size")
-            return
+            raise ValueError("Target height and width must be greater or equal to nn_input_size")
+            
     
         img: np.array = cv2.imread(os.path.join(self.imgs_path, img_basename))
 
@@ -193,8 +185,7 @@ class Slicer:
         image_height, image_width, _ = img.shape
 
         if image_height < target_height or image_width < target_width:
-            logging.warning(f"Image dimensions are smaller than target dimensions for {img_basename}")
-            return
+            raise ValueError(f"Image dimensions are smaller than target dimensions for {img_basename}")
         
         regions: dict[int, tuple[int, int, int, int]] = self.calculate_slice_regions(image_height, image_width, target_height, target_width, overlap_height_ratio, overlap_width_ratio)
         sliced_labels: dict[int, list[tuple[int, float, float, float, float]]]
@@ -213,18 +204,7 @@ class Slicer:
         self._slice_and_save_imgs(regions, img, img_basename.removesuffix(f".{img_basename.split('.')[-1]}"), img_basename.split('.')[-1])
 
 
-    def _compress(self) -> None:
-        shutil.make_archive(os.path.basename(self.output_path), 'zip', self.output_path)
-
-
-    def _post_process(self) -> None:
-        # print out log and delete file
-        with open(f"{self.output_path}/log.txt", 'r') as file:
-            print(file.read())
-            os.remove(f"{self.output_path}/log.txt")
-
-
-    def slice(self, target_height: int, target_width: int, overlap_height_ratio: float, overlap_width_ratio: float, archive: bool = False, workers: int = os.cpu_count()):
+    def slice(self, target_height: int, target_width: int, overlap_height_ratio: float, overlap_width_ratio: float, workers: int = os.cpu_count()):
         start = time.time()
         img_basenames = os.listdir(self.imgs_path)
         args = [(img_basename, target_height, target_width, overlap_height_ratio, overlap_width_ratio) for img_basename in img_basenames]
@@ -232,20 +212,22 @@ class Slicer:
         with ProcessPoolExecutor(max_workers=workers) as executor:
             futures = [executor.submit(self._process, *arg) for arg in args]
             
-            for _ in tqdm(as_completed(futures), total=len(args), desc="Processing Images"):
-                pass
+            for future in tqdm(as_completed(futures), total=len(args), desc="Processing Images"):
+                try: 
+                    future.result()  
         
-        self._post_process()
-
-        if archive: 
-            self._compress()
+                except Exception as e:
+                    print(f"An error occurred: {e}")
+                    traceback.print_exc()
+                    for f in futures:
+                        f.cancel()
+                    exit(1)
 
         print(f"Time taken: {time.time() - start:.2f} seconds")
 
 
     def single_slice(self, img_basename: str,  target_height: int, target_width: int, overlap_height_ratio: float, overlap_width_ratio: float) -> None:
         self._process(img_basename, target_height, target_width, overlap_height_ratio, overlap_width_ratio)
-        self._post_process()
 
     
     def _calc_slice_labels(self, image_height: int, image_width: int, regions: dict[int, tuple[int, int, int, int]], labels: list[tuple[int, float, float, float, float]]) -> dict[int, list[tuple[int, float, float, float, float]]]: 
@@ -278,17 +260,16 @@ class Slicer:
                 if self.bbox_size_threshold is not None and intersection.area() < self.bbox_size_threshold:
                     match self.sliced_bbox_operation: 
                         case Sliced_BBox_Operation.THROW: # remove bbox from label
-                            print(f"Throwing away bbox {class_id} in region {region_index}")
                             continue
 
                         case Sliced_BBox_Operation.DELETE: # delete label and corresponding region 
-                            print(f"Deleting bbox {class_id} in region {region_index}")
                             del new_labels[region_index]
                             del new_regions[region_index] 
                             break
                         
                         case _: 
                             raise ValueError("Invalid Sliced_BBox_Operation") 
+                         
 
                 new_labels[region_index].append((class_id, intersection.x_center(), intersection.y_center(), intersection.width(), intersection.height()))
         
