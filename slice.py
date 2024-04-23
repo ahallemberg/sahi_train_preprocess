@@ -247,20 +247,15 @@ class Slicer:
                 bbox_topl = Point(bbox_x, bbox_y)
                 bbox_botr = Point(bbox_x + bbox_w, bbox_y + bbox_h)
 
-          
-
                 intersection = rectangle_region.intersection(RectangleRegion(bbox_topl, bbox_botr))
                 if intersection is None:
                     continue
-                
-                intersection.transform_to_local(rectangle_region)
-                intersection /= rectangle_region
 
-                bbox_rel_to_region= RectangleRegion(bbox_topl, bbox_botr) / rectangle_region
-                bbox_rel_to_region_area = bbox_rel_to_region.area()
-
-                # filter bbox if it is too small
-                if self.bbox_size_threshold is not None and (bbox_rel_to_region_area/intersection.area()) < self.bbox_size_threshold:
+                # calc area
+                bbox_area = bbox_w * bbox_h
+                intersection_area = intersection.area()
+              
+                if intersection_area/bbox_area < self.bbox_size_threshold:
                     if self.sliced_bbox_operation == Sliced_BBox_Operation.THROW: 
                         continue
                     
@@ -271,7 +266,9 @@ class Slicer:
                         
                     else: 
                         raise ValueError("Invalid Sliced_BBox_Operation") 
-                         
+                    
+                intersection.transform_to_local(rectangle_region)
+                intersection /= rectangle_region
 
                 new_labels[region_index].append((class_id, intersection.x_center(), intersection.y_center(), intersection.width(), intersection.height()))
         
