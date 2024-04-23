@@ -87,7 +87,7 @@ class RectangleRegion:
 
 
 class Slicer:
-    def __init__(self, imgs_path: str, labels_path: str, output_path: str, nn_input_size: int, empty_img_ratio: Union[None,float] = None, bbox_size_threshold: None|float = None, sliced_bbox_operation: Sliced_BBox_Operation = Sliced_BBox_Operation.DELETE, shuffle_empty: bool = False) -> None: 
+    def __init__(self, imgs_path: str, labels_path: str, output_path: str, nn_input_size: int, empty_img_ratio: Union[None,float] = None, bbox_size_threshold: Union[None,float] = None, sliced_bbox_operation: Sliced_BBox_Operation = Sliced_BBox_Operation.DELETE, shuffle_empty: bool = False) -> None: 
         assert os.path.exists(imgs_path), "Image path does not exist"
         assert os.path.exists(labels_path), "Label path does not exist"
         
