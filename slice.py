@@ -236,7 +236,7 @@ class Slicer:
         for region_index, (region_x, region_y, region_w, region_h) in regions.items():
             region_topl = Point(region_x, region_y)
             region_botr = Point(region_x + region_w, region_y + region_h)
-            rectangleRegion = RectangleRegion(region_topl, region_botr)
+            rectangle_region = RectangleRegion(region_topl, region_botr)
       
             for class_id, x_center_rel, y_center_rel, width_rel, height_rel in labels: # relative to original image
                 bbox_x = (x_center_rel - width_rel / 2) * image_width
@@ -247,16 +247,20 @@ class Slicer:
                 bbox_topl = Point(bbox_x, bbox_y)
                 bbox_botr = Point(bbox_x + bbox_w, bbox_y + bbox_h)
 
-                intersection = rectangleRegion.intersection(RectangleRegion(bbox_topl, bbox_botr))
+          
+
+                intersection = rectangle_region.intersection(RectangleRegion(bbox_topl, bbox_botr))
                 if intersection is None:
                     continue
                 
-                intersection.transform_to_local(rectangleRegion)
-                intersection /= rectangleRegion
+                intersection.transform_to_local(rectangle_region)
+                intersection /= rectangle_region
 
+                bbox_rel_to_region= RectangleRegion(bbox_topl, bbox_botr) / rectangle_region
+                bbox_rel_to_region_area = bbox_rel_to_region.area()
 
                 # filter bbox if it is too small
-                if self.bbox_size_threshold is not None and intersection.area() < self.bbox_size_threshold:
+                if self.bbox_size_threshold is not None and (bbox_rel_to_region_area/intersection.area()) < self.bbox_size_threshold:
                     if self.sliced_bbox_operation == Sliced_BBox_Operation.THROW: 
                         continue
                     
