@@ -51,7 +51,6 @@ class RectangleRegion:
         self.top_left.y /= other.height()
         self.bottom_right.x /= other.width()
         self.bottom_right.y /= other.height()
-
         return self
 
     def width(self) -> float:
@@ -89,7 +88,7 @@ class RectangleRegion:
 
 
 class Slicer:
-    def __init__(self, imgs_path: str, labels_path: str, output_path: str, nn_input_size: int, empty_img_ratio: None|float = None, bbox_size_threshold: None|float = None, sliced_bbox_operation: Sliced_BBox_Operation = Sliced_BBox_Operation.DELETE) -> None: 
+    def __init__(self, imgs_path: str, labels_path: str, output_path: str, nn_input_size: int, empty_img_ratio: None|float = None, bbox_size_threshold: None|float = None, sliced_bbox_operation: Sliced_BBox_Operation = Sliced_BBox_Operation.DELETE, shuffle_empty: bool = False) -> None: 
         assert os.path.exists(imgs_path), "Image path does not exist"
         assert os.path.exists(labels_path), "Label path does not exist"
         
@@ -109,6 +108,7 @@ class Slicer:
         self.empty_img_ratio = empty_img_ratio
         self.bbox_size_threshold = bbox_size_threshold
         self.sliced_bbox_operation = sliced_bbox_operation
+        self.shuffle_empty = shuffle_empty
 
         assert nn_input_size > 0, "nn_input_size must be greater than 0"
         self.nn_input_size = nn_input_size
@@ -309,9 +309,10 @@ class Slicer:
             new_regions[index] = regions[index]
 
 
-        # shuffle empty labels to get random backgrounds 
         l = list(empty_labels.items())
-        shuffle(l)
+        if self.shuffle_empty:
+            shuffle(l)
+            
         for index, empty_label in l: # loop tough empty images
             if self._empty_img_count / max(self._total_img_count,1) < self.empty_img_ratio: # check if ratio is less than threshold
                 self._total_img_count += 1
@@ -323,16 +324,3 @@ class Slicer:
 
      
         return new_regions, new_labels
-
-
-slicer = Slicer(
-    "/home/askhb/ascend/suas2023_detection_dataset/test/resized/images", 
-    "/home/askhb/ascend/suas2023_detection_dataset/test/resized/labels", 
-    "/home/askhb/ascend/suas2023_detection_dataset/test/custom_sliced_test2", 
-    640,
-    0.5,
-    0.1
-
-)
-
-slicer.single_slice("Image7830.png", 640, 640, 0.2, 0.2)
