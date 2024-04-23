@@ -87,7 +87,7 @@ class RectangleRegion:
 
 
 class Slicer:
-    def __init__(self, imgs_path: str, labels_path: str, output_path: str, nn_input_size: int, empty_img_ratio: None|float = None, bbox_size_threshold: None|float = None, sliced_bbox_operation: Sliced_BBox_Operation = Sliced_BBox_Operation.DELETE, shuffle_empty: bool = False) -> None: 
+    def __init__(self, imgs_path: str, labels_path: str, output_path: str, nn_input_size: int, empty_img_ratio: Union[None,float] = None, bbox_size_threshold: None|float = None, sliced_bbox_operation: Sliced_BBox_Operation = Sliced_BBox_Operation.DELETE, shuffle_empty: bool = False) -> None: 
         assert os.path.exists(imgs_path), "Image path does not exist"
         assert os.path.exists(labels_path), "Label path does not exist"
         
@@ -178,7 +178,6 @@ class Slicer:
         if target_height < self.nn_input_size or target_width < self.nn_input_size:
             raise ValueError("Target height and width must be greater or equal to nn_input_size")
             
-    
         img: np.array = cv2.imread(os.path.join(self.imgs_path, img_basename))
 
         labels = self.load_yolo_labels(os.path.join(self.labels_path, img_basename.replace(img_basename.split('.')[-1], "txt")))
@@ -258,17 +257,16 @@ class Slicer:
 
                 # filter bbox if it is too small
                 if self.bbox_size_threshold is not None and intersection.area() < self.bbox_size_threshold:
-                    match self.sliced_bbox_operation: 
-                        case Sliced_BBox_Operation.THROW: # remove bbox from label
-                            continue
-
-                        case Sliced_BBox_Operation.DELETE: # delete label and corresponding region 
-                            del new_labels[region_index]
-                            del new_regions[region_index] 
-                            break
+                    if self.sliced_bbox_operation == Sliced_BBox_Operation.THROW: 
+                        continue
+                    
+                    elif self.sliced_bbox_operation == Sliced_BBox_Operation.DELETE: # delete label and corresponding region 
+                        del new_labels[region_index]
+                        del new_regions[region_index] 
+                        break
                         
-                        case _: 
-                            raise ValueError("Invalid Sliced_BBox_Operation") 
+                    else: 
+                        raise ValueError("Invalid Sliced_BBox_Operation") 
                          
 
                 new_labels[region_index].append((class_id, intersection.x_center(), intersection.y_center(), intersection.width(), intersection.height()))
