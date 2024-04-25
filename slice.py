@@ -254,6 +254,7 @@ class Slicer:
                 # calc area
                 bbox_area = bbox_w * bbox_h
                 intersection_area = intersection.area()
+                # check that correct
               
                 if intersection_area/bbox_area < self.bbox_size_threshold:
                     if self.sliced_bbox_operation == Sliced_BBox_Operation.THROW: 
@@ -263,6 +264,8 @@ class Slicer:
                         del new_labels[region_index]
                         del new_regions[region_index] 
                         break
+
+                    # implement to just do nothing
                         
                     else: 
                         raise ValueError("Invalid Sliced_BBox_Operation") 
