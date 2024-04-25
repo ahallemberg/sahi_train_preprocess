@@ -9,11 +9,13 @@ import copy
 from random import shuffle 
 from typing import Union
 import traceback
+from abc import ABC
 
 
 class Sliced_BBox_Operation(Enum): 
     THROW = 1 # throw away the bbox
     DELETE = 2 # delete the slice
+    KEEP = 3
 
 
 class Point: 
@@ -86,7 +88,86 @@ class RectangleRegion:
         return RectangleRegion(top_left, bottom_right)
 
 
-class Slicer:
+class Slicer(ABC):
+    def calculate_slice_regions(self, image_height: int, image_width: int, target_height: int, target_width: int, overlap_height_ratio: int, overlap_width_ratio: int) -> dict[int, tuple[int, int, int, int]]:
+        # Calculations for moving step in both dimensions
+        step_height = target_height - int(target_height * overlap_height_ratio)
+        step_width = target_width - int(target_width * overlap_width_ratio)
+
+        # Pre-calculate last slice adjustments
+        last_x = image_width - target_width
+        last_y = image_height - target_height
+
+        regions: dict[int, tuple[int, int, int, int]] = {}
+        index = 0
+
+        for y in range(0, image_height, step_height):
+            adjusted_y = y if y + target_height <= image_height else last_y
+            for x in range(0, image_width, step_width):
+                adjusted_x = x if x + target_width <= image_width else last_x
+                regions[index] = (adjusted_x, adjusted_y, target_width, target_height)
+                index += 1
+
+        return regions
+
+
+    def resize_imgs(self, img_slices: list[np.array], target_long_side: int) -> list[np.array]:
+        resized_slices = []
+        for img_slice in img_slices:
+            if img_slice.shape[0] > target_long_side or img_slice.shape[1] > target_long_side:
+                h, w = img_slice.shape[:2]
+                if h > w:  
+                    scale = target_long_side / float(h)
+                    new_h, new_w = target_long_side, int(w * scale)
+                else: 
+                    scale = target_long_side / float(w)
+                    new_h, new_w = int(h * scale), target_long_side
+
+                # Resize the slice
+                resized_slice = cv2.resize(img_slice, (new_w, new_h), interpolation=cv2.INTER_AREA)
+                resized_slices.append(resized_slice)
+            else: 
+                resized_slices.append(img_slice)
+        
+        return resized_slices
+    
+    
+    def slice_img(self, regions: dict[int, tuple[int, int, int, int]], img: np.ndarray) -> list[np.array]:
+        imgs: list[np.array] = []
+        for region in regions.values():
+            x, y, w, h = region
+            sliced_img = img[y:y+h, x:x+w]
+            imgs.append(sliced_img)
+
+        return imgs
+    
+    def save_imgs(self, sliced_imgs: list[np.array], output_dir: str, name: str, ext: str) -> None:
+        for index, img in enumerate(sliced_imgs): 
+            cv2.imwrite(os.path.join(output_dir, f"{name}_{index}.{ext}"), img)
+
+
+class ImageSlicer(Slicer):     
+    def process(self, filename: str, target_height: int, target_width: int, overlap_height_ratio: int, overlap_width_ratio: int, resize_target: int|None = None) -> list[np.array]:     
+        img: np.array = cv2.imread(filename)
+        image_height, image_width, _ = img.shape
+
+        if image_height < target_height or image_width < target_width:
+            raise ValueError(f"Image dimensions are smaller than target dimensions for {filename}")
+        
+        regions: dict[int, tuple[int, int, int, int]] = self.calculate_slice_regions(image_height, image_width, target_height, target_width, overlap_height_ratio, overlap_width_ratio)
+        
+        slices: list[np.array] = self.slice_img(regions, img)
+        if resize_target is not None:
+            slices = self.resize_imgs(slices, resize_target)
+
+        return slices
+    
+        
+    def single_slice(self, filename: str,  target_height: int, target_width: int, overlap_height_ratio: float, overlap_width_ratio: float, resize_target: int|None = None) -> list[np.array]:
+        return self.process(filename, target_height, target_width, overlap_height_ratio, overlap_width_ratio, resize_target)
+
+
+class ImageAndLabelSlicer(Slicer):
     def __init__(self, imgs_path: str, labels_path: str, output_path: str, nn_input_size: int, empty_img_ratio: Union[None,float] = None, bbox_size_threshold: Union[None,float] = None, sliced_bbox_operation: Sliced_BBox_Operation = Sliced_BBox_Operation.DELETE, shuffle_empty: bool = False) -> None: 
         assert os.path.exists(imgs_path), "Image path does not exist"
         assert os.path.exists(labels_path), "Label path does not exist"
@@ -115,27 +196,6 @@ class Slicer:
         self._empty_img_count = 0
         self._total_img_count = 0
 
-    def calculate_slice_regions(self, image_height: int, image_width: int, target_height: int, target_width: int, overlap_height_ratio: int, overlap_width_ratio: int) -> dict[int, tuple[int, int, int, int]]:
-        # Calculations for moving step in both dimensions
-        step_height = target_height - int(target_height * overlap_height_ratio)
-        step_width = target_width - int(target_width * overlap_width_ratio)
-
-        # Pre-calculate last slice adjustments
-        last_x = image_width - target_width
-        last_y = image_height - target_height
-
-        regions: dict[int, tuple[int, int, int, int]] = {}
-        index = 0
-
-        for y in range(0, image_height, step_height):
-            adjusted_y = y if y + target_height <= image_height else last_y
-            for x in range(0, image_width, step_width):
-                adjusted_x = x if x + target_width <= image_width else last_x
-                regions[index] = (adjusted_x, adjusted_y, target_width, target_height)
-                index += 1
-
-        return regions
-    
 
     def load_yolo_labels(self, filename: str) -> list[tuple[int, float, float, float, float]]:
         with open(filename, 'r') as file:
@@ -144,92 +204,14 @@ class Slicer:
         return labels
     
     
-    def _save_labels(self, sliced_labels: dict[int, list[tuple[int, float, float, float, float]]], name: str) -> None:
+    def save_labels(self, sliced_labels: dict[int, list[tuple[int, float, float, float, float]]], output_dir: str, name: str) -> None:
         for region_index, label_group in sliced_labels.items(): 
-            with open(os.path.join(self.output_path, "labels", f"{name}_{region_index}.txt"), 'w') as file:
+            with open(os.path.join(output_dir, "labels", f"{name}_{region_index}.txt"), 'w') as file:
                 for label in label_group:
                     file.write(f"{label[0]} {label[1]} {label[2]} {label[3]} {label[4]}\n")
 
-        
-    def resize_slice(self, img_slice: np.array, target_long_side: int) -> np.array:
-        h, w = img_slice.shape[:2]
-        if h > w:  
-            scale = target_long_side / float(h)
-            new_h, new_w = target_long_side, int(w * scale)
-        else: 
-            scale = target_long_side / float(w)
-            new_h, new_w = int(h * scale), target_long_side
 
-        # Resize the slice
-        resized_slice = cv2.resize(img_slice, (new_w, new_h), interpolation=cv2.INTER_AREA)
-        return resized_slice
-
-    
-    def _slice_and_save_imgs(self, regions: dict[int, tuple[int, int, int, int]], img: np.ndarray, name: str, ext: str) -> None:
-        for region_index, region in regions.items():
-            x, y, w, h = region
-            sliced_img = img[y:y+h, x:x+w]
-            if sliced_img.shape[0] > self.nn_input_size or sliced_img.shape[1] > self.nn_input_size:
-                sliced_img = self.resize_slice(sliced_img, self.nn_input_size)
-            cv2.imwrite(os.path.join(self.output_path, "images", f"{name}_{region_index}.{ext}"), sliced_img)
-
-   
-    def _process(self, img_basename: str, target_height: int, target_width: int, overlap_height_ratio: int, overlap_width_ratio: int) -> None:
-        if target_height < self.nn_input_size or target_width < self.nn_input_size:
-            raise ValueError("Target height and width must be greater or equal to nn_input_size")
-            
-        img: np.array = cv2.imread(os.path.join(self.imgs_path, img_basename))
-
-        labels = self.load_yolo_labels(os.path.join(self.labels_path, img_basename.replace(img_basename.split('.')[-1], "txt")))
-        image_height, image_width, _ = img.shape
-
-        if image_height < target_height or image_width < target_width:
-            raise ValueError(f"Image dimensions are smaller than target dimensions for {img_basename}")
-        
-        regions: dict[int, tuple[int, int, int, int]] = self.calculate_slice_regions(image_height, image_width, target_height, target_width, overlap_height_ratio, overlap_width_ratio)
-        sliced_labels: dict[int, list[tuple[int, float, float, float, float]]]
-
-        regions, sliced_labels = self._calc_slice_labels(image_height, image_width, regions, labels) 
-        del labels
-
-        # filter labels for bbox size
-        if self.empty_img_ratio is not None:
-            regions, sliced_labels = self._filter_empty_labels(regions, sliced_labels)
-        
-        # write labels to disk
-        self._save_labels(sliced_labels, img_basename.removesuffix(f".{img_basename.split('.')[-1]}"))
-
-        # slice the actual image and save to disk
-        self._slice_and_save_imgs(regions, img, img_basename.removesuffix(f".{img_basename.split('.')[-1]}"), img_basename.split('.')[-1])
-
-
-    def slice(self, target_height: int, target_width: int, overlap_height_ratio: float, overlap_width_ratio: float, workers: int = os.cpu_count()):
-        start = time.time()
-        img_basenames = os.listdir(self.imgs_path)
-        args = [(img_basename, target_height, target_width, overlap_height_ratio, overlap_width_ratio) for img_basename in img_basenames]
-
-        with ProcessPoolExecutor(max_workers=workers) as executor:
-            futures = [executor.submit(self._process, *arg) for arg in args]
-            
-            for future in tqdm(as_completed(futures), total=len(args), desc="Processing Images"):
-                try: 
-                    future.result()  
-        
-                except Exception as e:
-                    print(f"An error occurred: {e}")
-                    traceback.print_exc()
-                    for f in futures:
-                        f.cancel()
-                    exit(1)
-
-        print(f"Time taken: {time.time() - start:.2f} seconds")
-
-
-    def single_slice(self, img_basename: str,  target_height: int, target_width: int, overlap_height_ratio: float, overlap_width_ratio: float) -> None:
-        self._process(img_basename, target_height, target_width, overlap_height_ratio, overlap_width_ratio)
-
-    
-    def _calc_slice_labels(self, image_height: int, image_width: int, regions: dict[int, tuple[int, int, int, int]], labels: list[tuple[int, float, float, float, float]]) -> dict[int, list[tuple[int, float, float, float, float]]]: 
+    def calc_slice_labels(self, image_height: int, image_width: int, regions: dict[int, tuple[int, int, int, int]], labels: list[tuple[int, float, float, float, float]]) -> dict[int, list[tuple[int, float, float, float, float]]]: 
         new_regions = copy.copy(regions) # doesnt need to use deepcopy since del only deletes references
         new_labels: dict[int, list[tuple[int, float, float, float, float]]] = {region_index: [] for region_index in regions}
      
@@ -266,6 +248,9 @@ class Slicer:
                         break
 
                     # implement to just do nothing
+
+                    elif self.sliced_bbox_operation == Sliced_BBox_Operation.KEEP:
+                        pass 
                         
                     else: 
                         raise ValueError("Invalid Sliced_BBox_Operation") 
@@ -278,7 +263,7 @@ class Slicer:
         return new_regions, new_labels
     
 
-    def _filter_empty_labels(self, regions: dict[int, tuple[int, int, int, int]], labels: dict[int, list[tuple[int, float, float, float, float]]]) -> tuple[dict[int, tuple[int, int, int, int]], dict[int, list[tuple[int, float, float, float, float]]]]: # takes in pointers and deletes items from the list/dict
+    def filter_empty_labels(self, regions: dict[int, tuple[int, int, int, int]], labels: dict[int, list[tuple[int, float, float, float, float]]]) -> tuple[dict[int, tuple[int, int, int, int]], dict[int, list[tuple[int, float, float, float, float]]]]: # takes in pointers and deletes items from the list/dict
         bbox_labels = {region_index: label for region_index, label in labels.items() if len(label) > 0}
         empty_labels = {region_index: label for region_index, label in labels.items() if len(label) == 0}
 
@@ -305,5 +290,74 @@ class Slicer:
                 new_regions[index] = regions[index]
                 new_labels[index] = empty_label # add empty label to
 
-     
         return new_regions, new_labels
+    
+    
+    def slice_all(self, target_height: int, target_width: int, overlap_height_ratio: float, overlap_width_ratio: float, workers: int = os.cpu_count(), verbose: bool = True) -> None:
+        if verbose: 
+            start = time.time()
+        img_basenames = os.listdir(self.imgs_path)
+        args = [(img_basename, target_height, target_width, overlap_height_ratio, overlap_width_ratio) for img_basename in img_basenames]
+
+        with ProcessPoolExecutor(max_workers=workers) as executor:
+            futures = [executor.submit(self.process, *arg) for arg in args]
+            if verbose:      
+                for future in tqdm(as_completed(futures), total=len(args), desc="Processing Images"):
+                    try: 
+                        future.result()  
+            
+                    except Exception as e:
+                        print(f"An error occurred: {e}")
+                        traceback.print_exc()
+                        for f in futures:
+                            f.cancel()
+                        exit(1)
+            else: 
+                for future in as_completed(futures):
+                    try: 
+                        future.result()  
+            
+                    except Exception as e:
+                        print(f"An error occurred: {e}")
+                        traceback.print_exc()
+                        for f in futures:
+                            f.cancel()
+                        exit(1)
+        
+        if verbose:
+            print(f"Time taken: {time.time() - start:.2f} seconds")
+
+
+    def single_slice(self, img_basename: str,  target_height: int, target_width: int, overlap_height_ratio: float, overlap_width_ratio: float) -> None:
+        self.process(img_basename, target_height, target_width, overlap_height_ratio, overlap_width_ratio)
+
+   
+    def process(self, img_basename: str, target_height: int, target_width: int, overlap_height_ratio: int, overlap_width_ratio: int) -> None:
+        if target_height < self.nn_input_size or target_width < self.nn_input_size:
+            raise ValueError("Target height and width must be greater or equal to nn_input_size")
+            
+        img: np.array = cv2.imread(os.path.join(self.imgs_path, img_basename))
+
+        labels = self.load_yolo_labels(os.path.join(self.labels_path, img_basename.replace(img_basename.split('.')[-1], "txt")))
+        image_height, image_width, _ = img.shape
+
+        if image_height < target_height or image_width < target_width:
+            raise ValueError(f"Image dimensions are smaller than target dimensions for {img_basename}")
+        
+        regions: dict[int, tuple[int, int, int, int]] = self.calculate_slice_regions(image_height, image_width, target_height, target_width, overlap_height_ratio, overlap_width_ratio)
+        sliced_labels: dict[int, list[tuple[int, float, float, float, float]]]
+
+        regions, sliced_labels = self.calc_slice_labels(image_height, image_width, regions, labels) 
+        del labels
+
+        # filter labels for bbox size
+        if self.empty_img_ratio is not None:
+            regions, sliced_labels = self.filter_empty_labels(regions, sliced_labels)
+        
+        # write labels to disk
+        self.save_labels(sliced_labels, self.output_path, img_basename.removesuffix(f".{img_basename.split('.')[-1]}"))
+
+        # slice and resize the actual image and save to disk
+        sliced_imgs: list[np.array] = self.resize_imgs(self.slice_img(regions, img), self.nn_input_size)
+
+        self.save_imgs(sliced_imgs, os.path.join(self.output_path, "images"), img_basename.removesuffix(f".{img_basename.split('.')[-1]}"), img_basename.split('.')[-1])
